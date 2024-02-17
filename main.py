@@ -10,6 +10,7 @@ import openai
 import re
 from tempfile import NamedTemporaryFile
 import keyboard
+import random
 
 # Prompt for API keys if not set as environment variables
 OPENAI_API_KEY = os.getenv("openai_api_key") or input("Enter OpenAI API Key: ")
@@ -28,6 +29,7 @@ class AI2AI:
     def __init__(self):
         pygame.mixer.init()
         self.gemini_client = genai.GenerativeModel('gemini-pro')
+        self.openai_client = openai.OpenAI()
         self.sr_recognizer = sr.Recognizer()
         self.sr_microphone = sr.Microphone()
         self.chat_history = collections.deque(maxlen=10)
@@ -42,10 +44,11 @@ class AI2AI:
         self.GPT_model = "gpt-3.5-turbo"
 
     def start_conversation(self):
-        threading.Thread(target=self.continuous_ai_conversation, daemon=True).start()
         self.stop_listening = threading.Thread(target=self.listen_for_interaction, daemon=True).start()
+        threading.Thread(target=self.continuous_ai_conversation, daemon=True).start()
 
     def continuous_ai_conversation(self):
+        self.begin_conversation()
         while self.active_conversation:
             if self.interact_with_human:
                 if time.time() - self.last_human_interaction_time > 15:  # 15 seconds of no human interaction
@@ -54,33 +57,76 @@ class AI2AI:
                     self.insert_human_interaction_prompt(prompt)
             else:
                 self.ai_to_ai_conversation()
-                time.sleep(1)
+                # print("Chat history: ", self.chat_history)
+           
+                
+    def begin_conversation(self):
+        if self.topic == "default":
+            self.topic = self.get_random_topic()
+        if self.next_speaker == 'GPT':
+            initial_prompt = f"As GPT, you are starting a casual and human-like conversation with Google's Gemini about an interesting topic. The topic of the conversation is {self.topic}. Say hi to Gemini."
+            gpt_response = self.call_gpt(initial_prompt)
+            print(f"GPT: {gpt_response}\n")
+            self.next_speaker = 'Gemini'
+        elif self.next_speaker == 'Gemini':
+            initial_prompt = f"As Google Gemini, You are starting a casual and human-like conversation with OpenAI's GPT about an interesting topic. The topic of the conversation is {self.topic}. Say hi to GPT."
+            gemini_response = self.call_gemini(initial_prompt)
+            print(f"Gemini: {gemini_response}\n")
+            self.next_speaker = 'GPT'
+        
+    def get_random_topic(self):
+        filename = "topics.txt"
+        try:
+            with open(filename, 'r', encoding='utf-8') as file:  # Specify encoding here
+                topics = file.readlines()  # Read all lines into a list
+                topics = [topic.strip() for topic in topics]  # Remove any trailing newlines or spaces
+                return random.choice(topics) if topics else "default topic"
+        except FileNotFoundError:
+            print(f"Error: The file '{filename}' was not found.")
+            return "default topic"
 
     def ai_to_ai_conversation(self):
-        query = "Continue this conversation casually and naturally. It should mimic human-like conversation. So keep it natural and concise." + "\n".join(self.chat_history)
-        if self.next_speaker == 'GPT':
-            gemini_response = self.communicate_with_gemini(query)
-            print(f"Gemini: {gemini_response}")
-            self.next_speaker = 'Gemini'
-        else:
-            gpt_response = self.communicate_with_gpt(query)
-            print(f"GPT: {gpt_response}")
+        query = "Continue the conversation casually and naturally. Avoid banality and feel free to gradually change topic if it is getting repetitive. Your response should only contain the reply to the last message in the conversation. \nHere is the conversation history:\n" + "\n".join(self.chat_history)
+        if self.next_speaker == 'Gemini':
+            gemini_response = self.call_gemini(query)
+            print(f"Gemini: {gemini_response} \n\n")
             self.next_speaker = 'GPT'
-
-    def communicate_with_gpt(self, prompt):
-        response = openai.chat.completions.create(
-                model=self.GPT_model,
-                messages=prompt,
-                temperature=0.5,
-                top_p=0.5
+        else:
+            gpt_response = self.call_gpt(query)
+            print(f"GPT: {gpt_response} \n\n")
+            self.next_speaker = 'Gemini'
+            
+    def call_gpt(self, user_prompt):
+        try:
+            completion = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are an intelligent AI assistant, skilled in engaging in meaningful conversations with both humans and other AI. Your responses should be insightful, respectful, and considerate of the conversational context and topic at hand."},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=100, temperature=1
             )
-        text_output = response.choices[0].message.content
-        return text_output
-
-    def communicate_with_gemini(self, prompt):
-        gemini_response = self.gemini_client.generate_content(prompt)
-        self.chat_history.append("Gemini: " + gemini_response.text + "\n")
-        return gemini_response
+            # Adjusting the way to access the text output based on the actual structure of the response
+            if completion.choices and completion.choices[0].message:
+                text_output = completion.choices[0].message.content  # Adjusted access here
+                self.chat_history.append("GPT: " + text_output + "\n")
+                return text_output
+            else:
+                print("No response from GPT.")
+                return ""
+        except Exception as e:
+            print(f"Error calling GPT: {e}")
+            return ""
+        
+    def call_gemini(self, prompt):
+        try:
+            response = self.gemini_client.generate_content(prompt, generation_config=genai.types.GenerationConfig(max_output_tokens=100, temperature=1))
+            gemini_response_text = response.text            
+            self.chat_history.append("Gemini: " + gemini_response_text + "\n")
+            return gemini_response_text
+        except Exception as e:
+            print(f"Error calling Gemini: {e}")
+            return ""
 
     def listen_for_interaction(self):
         recognizer = sr.Recognizer()
@@ -127,10 +173,10 @@ class AI2AI:
         while self.human_interaction_count < 6 and not self.resume_conversation:
             self.human_interaction_count += 1
             if self.next_speaker == 'GPT':
-                self.communicate_with_gpt(prompt)
+                self.call_gpt(prompt)
                 self.next_speaker = 'Gemini'
             else:
-                self.communicate_with_gemini(prompt)
+                self.call_gemini(prompt)
                 self.next_speaker = 'GPT'
 
     def text_to_speech(self, text):
