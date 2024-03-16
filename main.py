@@ -217,14 +217,14 @@ class AI2AI:
                 audio_path = self.generate_speech_to_file(text)
                 if audio_path:
                     self.audio_queue.put(audio_path, block=True)  # Wait if necessary
+            time.sleep(0.2)
 
     def playback_worker(self):
         while True:
             if not self.audio_queue.empty():
                 audio_path = self.audio_queue.get()
                 self.play_audio_file(audio_path)
-            else:
-                time.sleep(0.1)  # Sleep briefly if the queue is empty to reduce CPU usage
+            time.sleep(0.2)  # Sleep briefly if the queue is empty to reduce CPU usage
 
     def play_audio_queue(self):
         while True:
@@ -252,11 +252,18 @@ class AI2AI:
         Returns the path to the temporary file.
         """
         try:
-            response = self.openai_client.audio.speech.create(
-                model="tts-1",
-                voice="alloy",
-                input=text
-            )
+            if self.next_speaker == 'GPT': 
+                    response = self.openai_client.audio.speech.create(
+                    model="tts-1", 
+                    voice="nova", # Gemini voice. All available voices: https://beta.openai.com/docs/engines/voice
+                    input=text
+                )
+            else:
+                response = self.openai_client.audio.speech.create(
+                    model="tts-1",
+                    voice="onyx", # GPT voice
+                    input=text
+                )
             with NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
                 audio_file_path = temp_audio_file.name
                 response.stream_to_file(audio_file_path)
