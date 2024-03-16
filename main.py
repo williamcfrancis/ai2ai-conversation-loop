@@ -78,6 +78,7 @@ class AI2AI:
                     self.ai_to_ai_conversation()
                     self.topic_msg_count += 1
                     # print("Chat history: ", self.chat_history)
+            time.sleep(0.25)
     
     def moderator_call(self, moderator_prompt):
         self.chat_history.append("Moderator: " + moderator_prompt + "\n")
@@ -241,7 +242,7 @@ class AI2AI:
                 os.remove(file_path)  # Clean up after playing
                 
             # Small delay to ensure cleanup and state updates complete
-            PLAYBACK_DELAY = random.uniform(0.5, 1.5) if PLAYBACK_DELAY is None else PLAYBACK_DELAY
+            PLAYBACK_DELAY = random.uniform(0.75, 2.5) if PLAYBACK_DELAY is None else PLAYBACK_DELAY
             time.sleep(PLAYBACK_DELAY)
             
 
