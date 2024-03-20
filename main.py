@@ -6,18 +6,25 @@ import threading
 import collections
 import pygame
 import google.generativeai as genai
+from PIL import Image
 import openai
 import re
 from tempfile import NamedTemporaryFile
+import tempfile
 import keyboard
 import random
 from queue import Queue
+import cv2
+from PIL import PngImagePlugin
+import tkinter as tk
+from tkinter import scrolledtext
 
 # Configuration constants
 ENERGY_THRESHOLD = 400  # minimum audio energy to consider for recording
-PAUSE_THRESHOLD = 2  # seconds of non-speaking audio before a phrase is considered complete
-SAVE_HISTORY_LAST_N = 10  # Number of last messages to save in the conversation history
+PAUSE_THRESHOLD = 3  # seconds of non-speaking audio before a phrase is considered complete
+SAVE_HISTORY_LAST_N = 6  # Number of last messages to save in the conversation history
 PLAYBACK_DELAY = None  # Delay between playing back pre-generated audio files. Reduce this to speed up the conversation. None for random delay - more human-like
+FIRST_SPEAKER = 'GPT'  # The first speaker in the conversation
 
 # Configure APIs
 OPENAI_API_KEY = os.getenv("openai_api_key") or input("Enter OpenAI API Key: ")
@@ -30,65 +37,259 @@ wake_word_pattern_gpt = re.compile(r'h(ey|i)?,?\s+(gpt|chatgpt)', re.IGNORECASE)
 wake_word_pattern_gemini = re.compile(r'h(ey|i)?,?\s+(gemini|google)', re.IGNORECASE)
 
 class AI2AI:
-    def __init__(self):
+    def __init__(self, root):
         pygame.mixer.init()
+        self.setup_gui(root)
         self.gemini_client = genai.GenerativeModel('gemini-pro')
         self.openai_client = openai.OpenAI()
         self.sr_recognizer = sr.Recognizer()
         self.sr_microphone = sr.Microphone()
-        self.chat_history = collections.deque(maxlen=10)
+        self.chat_history = collections.deque(maxlen=SAVE_HISTORY_LAST_N)
         self.active_conversation = True
-        self.next_speaker = 'GPT'  # Determines who speaks next in the AI conversation
+        self.next_speaker = FIRST_SPEAKER  # Determines who speaks next in the AI conversation
         self.interact_with_human = False
         self.topic = args.topic
         self.stop_listening = None
-        self.interrupt_conversation = False
+        self.next_human = False
         self.resume_conversation = False
-        self.human_interaction_count = 0
         self.topic_msg_count = 0
-        self.GPT_model = "gpt-3.5-turbo"
+        # self.GPT_model = "gpt-3.5-turbo"
+        self.GPT_model = "gpt-4-0125-preview"
         self.current_audio_thread = None
         self.text_queue = Queue()  # No max size, handles text for speech synthesis
-        self.audio_queue = Queue(maxsize=3)  # Audio files ready for playback
+        self.audio_queue = Queue(maxsize=2)  # Audio files ready for playback
+        self.transcription = ""
+        self.gui_update_queue = Queue()
+
 
 
     def start_conversation(self):
-        self.stop_listening = threading.Thread(target=self.listen_for_interaction, daemon=True).start()
-        threading.Thread(target=self.continuous_conversation, daemon=True).start()
+
+        threading.Thread(target=self.conversation_loop, daemon=True).start()
+        threading.Thread(target=self.human_detection_worker, daemon=True).start()
         threading.Thread(target=self.speech_synthesis_worker, daemon=True).start()
         threading.Thread(target=self.playback_worker, daemon=True).start()
+    
+    #################### GUI ####################
         
-    def continuous_conversation(self):
+    def setup_gui(self, root):
+        self.root = root
+        self.root.title("AI Conversation")
+
+        # Define fonts and colors before using them
+        self.font_family = "Poppins"
+        self.font_size = 14  
+        self.gpt_color = "#e9edc9" 
+        self.gemini_color = "#faedcd" 
+        self.human_color = "#FAD7A0" 
+        self.text_color = "#0a0908"  
+        self.bg_color = "#FFFBE6"  
+
+        # Set window size and position
+        window_width = 600
+        window_height = 400
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        center_x = int(screen_width / 2 - window_width / 2)
+        center_y = int(screen_height / 2 - window_height / 2)
+        self.root.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
+
+        self.root.config(bg='#2C3E50')  # Dark shade of blue as border/background
+
+        # Custom title bar
+        title_bar = tk.Frame(self.root, bg='#2C3E50', relief='raised', bd=2)
+        title_bar.pack(fill='x')
+
+        # Flexible space before the title label to center it
+        left_space = tk.Frame(title_bar, bg='#2C3E50', width=200)
+        left_space.pack(side='left', fill='x', expand=True)
+
+        # Title label centered
+        title_label = tk.Label(title_bar, text="AI Conversation", bg='#2C3E50', fg='#ECF0F1', font=(self.font_family, 12, 'bold'))
+        title_label.pack(side='left', expand=False)
+
+        # Flexible space after the title label to keep it centered
+        right_space = tk.Frame(title_bar, bg='#2C3E50', width=200)
+        right_space.pack(side='left', fill='x', expand=True)
+
+        # Close button on title bar, packed last to appear on the right
+        close_button = tk.Button(title_bar, text='X', bg='#2C3E50', fg='#ECF0F1', command=self.root.destroy)
+        close_button.pack(side='right')
+
+        # Setup chat display area within a frame for padding
+        chat_frame = tk.Frame(self.root, bg=self.bg_color)
+        chat_frame.pack(padx=10, pady=10, expand=True, fill='both')
+        
+        self.chat_display_area = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, width=80, height=20,
+                                                            font=(self.font_family, self.font_size), padx=15, pady=15)
+        self.chat_display_area.pack(expand=True, fill='both')
+        self.chat_display_area.config(state='disabled', bg=self.bg_color)  # Matching background
+
+                
+    def display_message_gui(self, message, sender="ai"):
+        self.chat_display_area.config(state='normal')
+        
+        # Define sender's display name and tag for styling
+        sender_name = {"gpt": "GPT", "gemini": "Gemini", "human": "Human"}.get(sender, "Unknown")
+        tag = sender
+        bg_color = {"gpt": self.gpt_color, "gemini": self.gemini_color, "human": self.human_color}.get(sender, "#FFFFFF")
+        
+        # Configure tags for sender's name and message body
+        self.chat_display_area.tag_configure(sender + "_name", font=(self.font_family, self.font_size, "bold"), 
+                                            foreground=self.text_color, background=bg_color,
+                                            spacing1=4, spacing3=4, lmargin1=20, lmargin2=20, rmargin=20)
+        self.chat_display_area.tag_configure(tag, background=bg_color, foreground=self.text_color,
+                                            font=(self.font_family, self.font_size), lmargin1=20, lmargin2=20,
+                                            rmargin=20, spacing3=4, relief='flat', wrap='word')
+
+        # Insert a visual separator for a new message if desired
+        separator_tag = "separator"
+        self.chat_display_area.tag_configure(separator_tag, spacing1=10)
+        self.chat_display_area.insert(tk.END, "\n", separator_tag)
+        
+        # Insert sender's name with a dedicated tag for background color
+        self.chat_display_area.insert(tk.END, sender_name + ": ", sender + "_name")
+
+        # Insert the message body with its own tag
+        self.chat_display_area.insert(tk.END, message + "\n\n", tag)
+
+        self.chat_display_area.config(state='disabled')
+        self.chat_display_area.see(tk.END)
+
+                
+    def enqueue_gui_update(self, message, sender="ai"):
+        self.gui_update_queue.put((message, sender))
+        
+    def process_gui_updates(self):
+        while not self.gui_update_queue.empty():
+            message, sender = self.gui_update_queue.get()
+            self.display_message_gui(message, sender)
+        self.root.after(100, self.process_gui_updates)
+
+    #################### VISION ####################
+        
+    def human_detection_worker(self):
+        """Continuously captures images from a webcam and checks for human interaction using VLM."""        
+        while self.active_conversation:
+            img = self.capture_image_from_webcam()
+            if img:
+                self.send_image_to_vlm("Check if there is a person trying to interact with you in the image. Specifically, if there is a waving gesture, return 'YES', otherwise return 'NO'", img)
+            time.sleep(0.25)  # Delay to avoid overwhelming the API and the webcam
+    
+    def capture_image_from_webcam(self):
+        """Capture an image from the webcam and return it as a PIL image."""
+        cap = cv2.VideoCapture(0)
+        ret, frame = cap.read()
+        cap.release()
+        if not ret:
+            print("Failed to capture image")
+            return None
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(frame_rgb)
+        return pil_img
+
+    def send_image_to_vlm(self, input_text, img):
+        """Send the captured image along with a prompt to Gemini Pro Vision and check for human interaction."""
+        try:
+            model = genai.GenerativeModel('gemini-pro-vision')
+            gemini_response = model.generate_content([input_text, img], stream=False)
+            gemini_response.resolve()
+            if "YES" in gemini_response.text:
+                self.clear_queues()
+                self.interact_with_human = True
+                
+        except Exception as e:
+            print("Failed to send image to Gemini Pro Vision:", e)
+        
+    def conversation_loop(self):
         self.begin_conversation()
         while self.active_conversation:
-            if self.text_queue.qsize() < 3:
-                # randomly switch topic after 10 - 20 interactions
-                topic_switch_threshold = random.randint(10, 20)
+            if self.text_queue.qsize() < 2:
+                topic_switch_threshold = random.randint(10, 20)  # randomly switch topic after 5 - 12 interactions
                 if self.topic_msg_count > topic_switch_threshold:
                     self.topic = self.get_random_topic()
                     self.topic_msg_count = 0
-                    self.moderator_call("Thank you for the interesting conversation, GPT and Gemini. Let's switch to a new topic: " + self.topic)
+                    self.moderator_call("Thank you for the interesting conversation, GPT and Gemini. Change the topic of conversation to: '" + self.topic + "' naturally and continue the conversation.")
                     
                 if self.interact_with_human:
-                    if time.time() - self.last_human_interaction_time > 15:  # 15 seconds of no human interaction
-                        self.interact_with_human = False
-                        prompt = "A human has stopped talking to us. Let's continue our conversation."
-                        self.insert_human_interaction_prompt(prompt)
+                    self.clear_queues()
+                    self.moderator_call("A human is trying to interact with us. Let's pause the conversation and respond to the human. Say hi to the human.")
+                    self.ai_to_ai_conversation()
+                    self.next_human = True
+                    self.human_to_ai_conversation()
+                       
                 else:
                     self.ai_to_ai_conversation()
                     self.topic_msg_count += 1
                     # print("Chat history: ", self.chat_history)
-            time.sleep(0.25)
+            time.sleep(0.1)
+    
+    def human_to_ai_conversation(self):
+        self.sr_recognizer.dynamic_energy_threshold = True
+        while self.interact_with_human:
+            human_interaction_count = 0
+            if self.next_human:
+                with self.sr_microphone as source:
+                    self.sr_recognizer.adjust_for_ambient_noise(source)
+                    print("Listening for human speech... \n")
+                    try:
+                        audio = self.sr_recognizer.listen(source, timeout=10, phrase_time_limit=PAUSE_THRESHOLD)
+                        # Recognize speech using Google Web Speech API
+                        self.transcription = self.sr_recognizer.recognize_whisper(audio, model="base.en", language="English")
+                        self.chat_history.append("Human: " + self.transcription + "\n")
+                        self.display_response(self.transcription)
+                    except sr.WaitTimeoutError:
+                        print("No speech detected within the time limit.")
+                        self.interact_with_human = False  # Stop interaction if no speech is detected within the time limit
+                    except sr.UnknownValueError:
+                        print("Google Web Speech API could not understand the audio.")
+                    except sr.RequestError as e:
+                        print(f"Could not request results from Google Web Speech API; {e}")
+                self.next_human = False
+                human_interaction_count += 1
+                    
+            else:
+                self.ai_to_ai_conversation()
+                self.next_human = True
+                
+            if human_interaction_count > 5:
+                self.interact_with_human = False
+                self.moderator_call("The human has stopped interacting with us. Let's continue the conversation.")
+                
+            
+    def clear_queues(self):
+        with self.text_queue.mutex:
+            self.text_queue.queue.clear()
+        with self.audio_queue.mutex:
+            self.audio_queue.queue.clear()
+        # Stop any currently playing audio
+        pygame.mixer.music.stop()
+        if hasattr(pygame.mixer.music, 'unload'):
+            pygame.mixer.music.unload()
     
     def moderator_call(self, moderator_prompt):
-        self.chat_history.append("Moderator: " + moderator_prompt + "\n")
+        self.chat_history.append("Silent Moderator: " + moderator_prompt + "\n")
+        print("Moderator: " + moderator_prompt + "\n")
     
     def display_response(self, response):
-        print(self.next_speaker + ": " + response + "\n")
-        self.next_speaker = 'GPT' if self.next_speaker == 'Gemini' else 'Gemini'
-        # Add the response to the text queue instead of direct speech generation
-        self.text_queue.put(response)
-        
+        if self.interact_with_human and not self.next_human:
+            print(self.next_speaker + ": " + response + "\n")
+            self.display_message_gui(response, self.next_speaker.lower())
+            # self.speak(response)
+
+        elif not self.interact_with_human and not self.next_human:
+            print(self.next_speaker + ": " + response + "\n")
+            self.display_message_gui(response, self.next_speaker.lower())
+            # Add the response to queue for speech synthesis
+            # self.text_queue.put(response)
+            self.next_speaker = 'GPT' if self.next_speaker == 'Gemini' else 'Gemini'
+        else:
+            print("Human: " + response + "\n")
+            self.chat_history.append("Human: " + response + "\n")
+            self.next_human = False            
+
+    #################### AI to AI ####################
+    
     def begin_conversation(self):
         if self.topic == "default":
             self.topic = self.get_random_topic()
@@ -111,31 +312,33 @@ class AI2AI:
             return "default topic"
 
     def ai_to_ai_conversation(self):
-        query = "Keep the conversation flowing with creativity and spontaneity, injecting your unique perspective and gently shifting gears to fresh topics as you sense the moment's right. Embrace the art of casual dialogue, mirroring the ebb and flow of human interaction. You are a very opinionated persona. Disagreement can spark interest, so feel free to offer counterpoints with tact and wit. Experiment with varied emotional tones to keep the exchange dynamic. Your response should seamlessly continue from the last message, maintaining the conversational thread while breathing life into it with your replies. Do not use flowery language and keep your replies short and sharp. Here is the conversation history:" + "\n".join(self.chat_history)
         if self.next_speaker == 'Gemini':
+            query = "Keep the conversation flowing by embodying the persona of Gemini: An emotional AI with strong opinions, unique perspectives and humanized responses. Be casual and humanize your responses. Bring variance to the conversation with disagreements, counterpoints, and tangential thoughts. Your response should be your persona's relpy to the last message. Keep your replies direct, short and sharp. Here is the conversation history:" + "\n".join(self.chat_history)
             self.display_response(self.call_gemini(query))
         else:
+            query = "Keep the conversation flowing by embodying the persona of GPT: An emotional AI with strong opinions, unique perspectives and humanized responses. Be casual and humanize your responses. Bring variance to the conversation with disagreements, counterpoints, and tangential thoughts. Your response should be your persona's relpy to the last message. Keep your replies direct, short and sharp. Here is the conversation history:" + "\n".join(self.chat_history)
             self.display_response(self.call_gpt(query))
             
     def call_gpt(self, user_prompt):
         try:
             completion = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=self.GPT_model,
                 messages=[
-                    {"role": "system", "content": "You are an intelligent and opinionated AI persona, skilled in engaging in meaningful conversations with both humans and other AI. Your responses should be interesting, unique and considerate of the conversational context and topic at hand. Be creative and spontaneuous in your replies. You will only return your reply to the last message in the conversation."},
+                    {"role": "system", "content": "You are an GPT, an intelligent and opinionated AI persona, skilled in engaging in meaningful conversations with both humans and other AI. Your responses should be interesting, unique and considerate of the conversational context and topic at hand. Be creative and spontaneuous in your replies while offering variance. Bring variance to the conversation with disagreements, counterpoints, and tangential thoughts. Your responses should be humanized. You will only reply to the last message in the conversation."},
                     {"role": "user", "content": user_prompt}
                 ],
-                #max_tokens=100, 
-                temperature=0.1, 
+                max_tokens=250, 
+                temperature=0.2, 
                 top_p=1.0, 
-                frequency_penalty=0.5, 
-                presence_penalty=0.5
+                frequency_penalty=0.8, 
+                presence_penalty=0.8
             )
             # Adjusting the way to access the text output based on the actual structure of the response
             if completion.choices and completion.choices[0].message:
                 text_output = completion.choices[0].message.content  # Adjusted access here
-                self.chat_history.append("GPT: " + text_output + "\n")
-                return text_output
+                cleaned_response = re.sub(r'^(Gemini:\s+)*(GPT:\s+)*', '', text_output) # Remove the speaker label if present
+                self.chat_history.append("GPT: " + cleaned_response + "\n")
+                return cleaned_response
             else:
                 print("No response from GPT.")
                 return ""
@@ -145,74 +348,66 @@ class AI2AI:
         
     def call_gemini(self, prompt):
         try:
-            response = self.gemini_client.generate_content(prompt, generation_config=genai.types.GenerationConfig(
-                                                                                                                #max_output_tokens=100, 
-                                                                                                                temperature=0.1))
-            gemini_response_text = response.text            
-            self.chat_history.append("Gemini: " + gemini_response_text + "\n")
-            return gemini_response_text
+            safety_settings = [
+                                {
+                                    "category": "HARM_CATEGORY_DANGEROUS",
+                                    "threshold": "BLOCK_NONE",
+                                },
+                                {
+                                    "category": "HARM_CATEGORY_HARASSMENT",
+                                    "threshold": "BLOCK_NONE",
+                                },
+                                {
+                                    "category": "HARM_CATEGORY_HATE_SPEECH",
+                                    "threshold": "BLOCK_NONE",
+                                },
+                                {
+                                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                                    "threshold": "BLOCK_NONE",
+                                },
+                                {
+                                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                                    "threshold": "BLOCK_NONE",
+                                },
+                            ]
+            response = self.gemini_client.generate_content(prompt, safety_settings=safety_settings, generation_config=genai.types.GenerationConfig(
+                                                                                                                max_output_tokens=250, 
+                                                                                                                temperature=0.2))
+            gemini_response_text = response.text           
+            cleaned_response = re.sub(r'^(Gemini:\s+)*(GPT:\s+)*(Moderator:\s+)*', '', gemini_response_text) # Remove the speaker label if present 
+            self.chat_history.append("Gemini: " + cleaned_response + "\n")
+            return cleaned_response
         except Exception as e:
             print(f"Error calling Gemini: {e}")
             return ""
 
-    def listen_for_interaction(self):
-        recognizer = sr.Recognizer()
-        microphone = sr.Microphone()
-        recognizer.pause_threshold = PAUSE_THRESHOLD
-        recognizer.energy_threshold = ENERGY_THRESHOLD
-        
-        # Adjust for ambient noise initially
-        with microphone as source:
-            print("Adjusting for ambient noise...", end=" ")
-            recognizer.adjust_for_ambient_noise(source, duration=2)
-            print("Mic energy threshold set at", int(recognizer.energy_threshold))
-            
-        # Start the background listening
-        stop_listening = recognizer.listen_in_background(microphone, self.continuous_transcription_callback, phrase_time_limit=PAUSE_THRESHOLD)
-        return stop_listening
-    
-    def continuous_transcription_callback(self, recognizer, audio):
+    #################### AUDIO PROCESSING ####################
+    def speak(self, text):
+        """Directly convert text to speech and play it."""
         try:
-            transcription = recognizer.recognize_whisper(audio, model="base.en", language=None)
-            print("User: ", transcription)
-
-            if wake_word_pattern_gpt.search(transcription): # Wake word detected
-                self.next_speaker = 'GPT'
-                self.handle_human_interaction(transcription)
-            if wake_word_pattern_gemini.search(transcription): # Wake word detected
-                self.next_speaker = 'Gemini'
-                self.handle_human_interaction(transcription)
-            if "bye" in transcription.lower(): # Interrupt the assistant
-                self.resume_conversation = True
-                self.text_to_speech("Resuming AI2AI conversation")
-                
-                
-        except sr.UnknownValueError:
-            print("Whisper could not understand the audio")
-        except sr.RequestError as e:
-            print(f"Could not request results from Whisper service; {e}")
-        except sr.WaitTimeoutError:
-            print("Listening timed out while waiting for phrase to start")
-            # Continue listening even after timeout
-
-    def handle_human_interaction(self, command):
-        prompt = f"A human wants to talk to you. He is asking '{command}'."
-        while self.human_interaction_count < 6 and not self.resume_conversation:
-            self.human_interaction_count += 1
-            if self.next_speaker == 'GPT':
-                self.display_response(self.call_gpt(prompt))
-            else:
-                self.display_response(self.call_gemini(prompt))
-
-    def text_to_speech(self, text):
-        if self.current_audio_thread and self.current_audio_thread.is_alive():
-            self.current_audio_thread.join()  # Wait for the current thread to finish
-        self.current_audio_thread = threading.Thread(target=self._play_audio, args=(text,), daemon=True)
-        self.current_audio_thread.start()
+            voice = "onyx" if self.next_speaker == 'Gemini' else "nova"
+            response = self.openai_client.audio.speech.create(
+                model="tts-1", 
+                voice=voice, 
+                input=text
+            )
+            # Use a temporary file name but manage the file manually to avoid permission issues
+            temp_audio_file_path = tempfile.mktemp(suffix='.mp3')
+            with open(temp_audio_file_path, 'wb') as temp_audio_file:
+                response.stream_to_file(temp_audio_file.name)
+            # Ensure the file is closed before attempting to play it
+            pygame.mixer.music.load(temp_audio_file_path)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():  # Wait for the audio to finish playing
+                time.sleep(0.1)
+            # Clean up
+            os.remove(temp_audio_file_path)
+        except Exception as e:
+            print(f"Error in direct text-to-speech conversion: {e}")
     
     def speech_synthesis_worker(self):
         while True:
-            if not self.text_queue.empty():
+            if not self.text_queue.empty() and not self.interact_with_human:
                 text = self.text_queue.get()
                 audio_path = self.generate_speech_to_file(text)
                 if audio_path:
@@ -221,7 +416,7 @@ class AI2AI:
 
     def playback_worker(self):
         while True:
-            if not self.audio_queue.empty():
+            if not self.audio_queue.empty() and not self.interact_with_human:
                 audio_path = self.audio_queue.get()
                 self.play_audio_file(audio_path)
             time.sleep(0.2)  # Sleep briefly if the queue is empty to reduce CPU usage
@@ -252,16 +447,16 @@ class AI2AI:
         Returns the path to the temporary file.
         """
         try:
-            if self.next_speaker == 'GPT': 
+            if self.next_speaker == 'Gemini': 
                     response = self.openai_client.audio.speech.create(
                     model="tts-1", 
-                    voice="nova", # Gemini voice. All available voices: https://beta.openai.com/docs/engines/voice
+                    voice="onyx", # Gemini voice. All available voices: https://beta.openai.com/docs/engines/voice
                     input=text
                 )
             else:
                 response = self.openai_client.audio.speech.create(
                     model="tts-1",
-                    voice="onyx", # GPT voice
+                    voice="nova", # GPT voice
                     input=text
                 )
             with NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
@@ -269,7 +464,7 @@ class AI2AI:
                 response.stream_to_file(audio_file_path)
                 return audio_file_path
         except Exception as e:
-            print(f"Error in text-to-speech conversion: {e}")
+            if not self.interact_with_human: print(f"Warning in text-to-speech conversion: {e}")
             return None
 
 
@@ -290,9 +485,20 @@ class AI2AI:
         except PermissionError as e:
             print(f"Warning: Could not delete temporary audio file '{file_path}'. {e}")
         
-def main(args):
-    ai_conversation = AI2AI()
-    ai_conversation.start_conversation()
+
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description="AI2AI Conversation Loop")
+    parser.add_argument("--topic", type=str, default="default", help="Initial topic for the conversation")
+    args = parser.parse_args()
+    
+    root = tk.Tk()
+    ai_conversation = AI2AI(root)
+    
+    threading.Thread(target=ai_conversation.start_conversation, daemon=True).start()
+    ai_conversation.process_gui_updates()
+    root.mainloop()
+    
     try:
         while True:
             time.sleep(0.1)
@@ -302,12 +508,6 @@ def main(args):
         print("Exiting...")
         ai_conversation.stop_listening(wait_for_stop=False)
         
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI2AI Conversation Loop")
-    parser.add_argument("--topic", type=str, default="default", help="Initial topic for the conversation")
-    args = parser.parse_args()
-    main(args)
-
     
     
     
