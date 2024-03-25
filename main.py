@@ -20,6 +20,9 @@ import tkinter as tk
 from tkinter import scrolledtext
 import signal
 import sys
+import ctypes
+from playsound import playsound
+import multiprocessing
 
 # Configuration constants
 ENERGY_THRESHOLD = 400  # minimum audio energy to consider for recording
@@ -44,6 +47,7 @@ class AI2AI:
     def __init__(self, root):
         pygame.mixer.init()
         self.setup_gui(root)
+        self.audio_stop_event = threading.Event()
         self.gemini_client = genai.GenerativeModel('gemini-pro')
         self.openai_client = openai.OpenAI()
         self.sr_recognizer = sr.Recognizer()
@@ -61,18 +65,41 @@ class AI2AI:
         # self.GPT_model = "gpt-4-0125-preview"
         self.current_audio_thread = None
         self.text_queue = Queue()  # No max size, handles text for speech synthesis
-        self.audio_queue = Queue(maxsize=2)  # Audio files ready for playback
+        self.audio_queue = Queue(maxsize=4)  # Audio files ready for playback
         self.transcription = ""
         self.gui_update_queue = Queue()
+        self.speech_synthesis_complete = True
 
 
     def start_conversation(self):
 
         threading.Thread(target=self.conversation_loop, daemon=True).start()
-        threading.Thread(target=self.human_detection_worker, daemon=True).start()
-        threading.Thread(target=self.speech_synthesis_worker, daemon=True).start()
-        threading.Thread(target=self.playback_worker, daemon=True).start()
-    
+        self.human_detection_thread = threading.Thread(target=self.human_detection_worker, daemon=True)
+        self.human_detection_thread.start()
+        self.speech_synthesis_thread = threading.Thread(target=self.speech_synthesis_worker, daemon=True)
+        self.speech_synthesis_thread.start()
+        self.playback_thread = threading.Thread(target=self.playback_worker, daemon=True)
+        self.playback_thread.start()
+        
+        threading.Thread(target=self.monitor_threads, daemon=True).start()
+
+    def monitor_threads(self):
+        while True:
+            if not self.human_detection_thread.is_alive() and not self.interact_with_human and not self.detected_wave:
+                self.human_detection_thread = threading.Thread(target=self.human_detection_worker, daemon=True)
+                self.human_detection_thread.start()
+                
+            if not self.speech_synthesis_thread.is_alive() and not self.interact_with_human and not self.detected_wave:
+                print("Speech synthesis thread restarting...")
+                self.speech_synthesis_thread = threading.Thread(target=self.speech_synthesis_worker, daemon=True)
+                self.speech_synthesis_thread.start()
+                
+            if not self.playback_thread.is_alive() and not self.interact_with_human and not self.detected_wave:
+                print("Playback thread restarting...")
+                self.playback_thread = threading.Thread(target=self.playback_worker, daemon=True)
+                self.playback_thread.start()
+            time.sleep(0.5)
+
     #################### GUI ####################
         
     def setup_gui(self, root):
@@ -174,10 +201,12 @@ class AI2AI:
     def human_detection_worker(self):
         """Continuously captures images from a webcam and checks for human interaction using VLM."""        
         while self.active_conversation:
+            if self.interact_with_human or self.detected_wave:
+                break
             img = self.capture_image_from_webcam()
             if img:
                 self.send_image_to_vlm("Check if there is a person trying to interact with you in the image. Specifically, if there is a waving gesture, return 'YES', otherwise return 'NO'", img)
-            # time.sleep(0.25)  # Delay to avoid overwhelming the API and the webcam
+                # time.sleep(0.25)  # Delay to avoid overwhelming the API and the webcam
     
     def capture_image_from_webcam(self):
         """Capture an image from the webcam and return it as a PIL image."""
@@ -198,11 +227,11 @@ class AI2AI:
             gemini_response = model.generate_content([input_text, img], stream=False)
             gemini_response.resolve()
             if "YES" in gemini_response.text:
-                self.clear_queues(stop_audio=True)
+                self.clear_queues()
                 self.interact_with_human = True
                 self.detected_wave = True
                 print("Human detected in the image. There shouldnt be an AI response after this\n")
-                self.clear_queues(stop_audio=True)
+                self.clear_queues()
                 
         except Exception as e:
             print("Failed to send image to Gemini Pro Vision:", e)
@@ -210,7 +239,7 @@ class AI2AI:
     def conversation_loop(self):
         self.begin_conversation()
         while self.active_conversation:
-            if self.text_queue.qsize() < 4:
+            if self.text_queue.qsize() < 2:
                 if self.topic_msg_count > TOPIC_SWIITCH_THRESHOLD:
                     self.topic = self.get_random_topic()
                     self.topic_msg_count = 0
@@ -218,7 +247,7 @@ class AI2AI:
                     
                 if self.interact_with_human:
                     print("Now we actually interact with the human\n")
-                    self.clear_queues(stop_audio=True)
+                    self.clear_queues()
                     self.moderator_call("A human is trying to interact with us. Pause the conversation and respond to the human. Say hi to the human.")
                     self.detected_wave = False
                     self.ai_call()
@@ -231,7 +260,7 @@ class AI2AI:
                 elif not self.interact_with_human:
                     self.ai_call()
                     self.topic_msg_count += 1
-            time.sleep(0.01)
+            time.sleep(0.1)
     
     def human_to_ai_conversation(self):
         self.sr_recognizer.dynamic_energy_threshold = True
@@ -250,6 +279,9 @@ class AI2AI:
                     except sr.WaitTimeoutError:
                         print("No speech detected within the time limit.")
                         self.interact_with_human = False  # Stop interaction if no speech is detected within the time limit
+                        self.next_human = False
+                        self.clear_queues()
+                        self.moderator_call("The human has stopped interacting with you. Say goodbye to the human and continue the conversation with the AI.")
                     except sr.UnknownValueError:
                         print("Google Web Speech API could not understand the audio.")
                     except sr.RequestError as e:
@@ -264,21 +296,20 @@ class AI2AI:
             if human_interaction_count > HUMAN_INTERACTION_LIMIT:
                 self.interact_with_human = False
                 self.next_human = False
-                self.clear_queues(stop_audio=False)
+                self.clear_queues()
                 self.moderator_call("The human has stopped interacting with you. Say goodbye to the human and continue the conversation with the AI.")
                 return
                     
-    def clear_queues(self, stop_audio=False):
+    def clear_queues(self):
+        
         with self.text_queue.mutex:
             self.text_queue.queue.clear()
+        # while not self.speech_synthesis_complete: # Wait for the current AI response to finish
+        #     time.sleep(0.1)
         with self.audio_queue.mutex:
             self.audio_queue.queue.clear()
-        if stop_audio:
-            # Stop any currently playing audio
-            pygame.mixer.music.stop()
-            if hasattr(pygame.mixer.music, 'unload'):
-                pygame.mixer.music.unload()
-    
+        self.stop_audio()
+        
     def moderator_call(self, moderator_prompt):
         self.chat_history.append("Silent Moderator: " + moderator_prompt + "\n")
         print("Moderator: " + moderator_prompt + "\n")
@@ -294,6 +325,7 @@ class AI2AI:
             print(self.next_speaker + ": " + response + "\n")
             self.enqueue_gui_update(response, self.next_speaker.lower())
             voice = "onyx" if self.next_speaker == 'GPT' else "nova"
+            # checking if the queue is actually getting filled
             self.text_queue.put((response, voice))
             self.next_speaker = 'GPT' if self.next_speaker == 'Gemini' else 'Gemini'
         else:
@@ -397,7 +429,7 @@ class AI2AI:
             return ""
 
     #################### AUDIO PROCESSING ####################
-    def speak(self, text, voice):
+    def speak(self, text, voice): 
         """Directly convert text to speech and play it."""
         try:
             response = self.openai_client.audio.speech.create(
@@ -410,52 +442,24 @@ class AI2AI:
             with open(temp_audio_file_path, 'wb') as temp_audio_file:
                 response.stream_to_file(temp_audio_file.name)
             # Ensure the file is closed before attempting to play it
-            pygame.mixer.music.load(temp_audio_file_path)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():  # Wait for the audio to finish playing
-                time.sleep(0.01)
-            # Clean up
+            playsound(temp_audio_file_path)
             os.remove(temp_audio_file_path)
-        except Exception as e:
-            print(f"Error in direct text-to-speech conversion: {e}")
+        except Exception:
+            return
     
-    def speech_synthesis_worker(self):
-        while self.active_conversation:
-            if not self.text_queue.empty() and not self.interact_with_human and not self.detected_wave:
+    def speech_synthesis_worker(self): # Worker to generate speech from text and save to a temporary file
+        while True:
+            if self.interact_with_human or self.detected_wave:
+                break
+            if not self.text_queue.empty() and self.audio_queue.qsize() < 2:
+                self.speech_synthesis_complete = False
                 text, voice = self.text_queue.get()  # Unpack text and voice
                 audio_path = self.generate_speech_to_file(text, voice)  # Pass voice to the method
-                if audio_path:
-                    self.audio_queue.put(audio_path, block=True)
-            time.sleep(0.01)
-
-    def playback_worker(self):
-        while self.active_conversation:
-            if not self.audio_queue.empty() and not self.interact_with_human:
-                audio_path = self.audio_queue.get()
-                self.play_audio_file(audio_path)
-            time.sleep(0.01)  # Sleep briefly if the queue is empty to reduce CPU usage
-
-    def play_audio_queue(self):
-        while self.active_conversation:
-            # Wait for an item in the queue
-            if not self.audio_queue.empty() and not self.interact_with_human and not self.detected_wave:
-                file_path = self.audio_queue.get()
-                
-                with self.playback_lock:
-                    self.audio_playing = True
-                    pygame.mixer.music.load(file_path)
-                    pygame.mixer.music.play()
-                    while pygame.mixer.music.get_busy():
-                        # Active wait; consider using pygame events or callbacks for a more efficient implementation
-                        time.sleep(0.01)
-                    self.audio_playing = False
-                    os.remove(file_path)  # Clean up after playing
-                    
-                # Small delay to ensure cleanup and state updates complete
-                time.sleep(PLAYBACK_DELAY)
-                
-
-    def generate_speech_to_file(self, text, voice):
+                self.audio_queue.put(audio_path, block=False) 
+                self.speech_synthesis_complete = True
+            time.sleep(0.1)
+            
+    def generate_speech_to_file(self, text, voice): # Generate speech from text and save to a temporary file
         try:
             response = self.openai_client.audio.speech.create(
                 model="tts-1",
@@ -470,25 +474,37 @@ class AI2AI:
             print(f"Warning in text-to-speech conversion: {e}")
             return None
 
-
-    def play_audio_file(self, file_path):
-        pygame.mixer.music.load(file_path)
+    def playback_worker(self): # Worker to play audio files from the queue
+        while True:
+            if self.interact_with_human or self.detected_wave:
+                break
+            if not self.audio_queue.empty():
+                audio_path = self.audio_queue.get()
+                self.play_audio_file(audio_path)
+            time.sleep(0.1)  # Sleep briefly if the queue is empty to reduce CPU usage
+            
+             
+    def start_audio(self, audio_path):
+        self.audio_stop_event.clear()  # Reset the event to allow playing
+        pygame.mixer.music.load(audio_path)
         pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            time.sleep(0.1)  # Wait for playback to finish
-        
+
+    def stop_audio(self):
+        self.audio_stop_event.set()  # Signal to stop
         pygame.mixer.music.stop()
         if hasattr(pygame.mixer.music, 'unload'):
-            pygame.mixer.music.unload()  # Ensure the file is released (Pygame 2.0.0+)
-        
-        time.sleep(0.5)  # Brief delay to ensure file release
-        
-        # Attempt to delete the file, handling any PermissionError gracefully
-        try:
-            os.remove(file_path)
-        except PermissionError as e:
-            print(f"Warning: Could not delete temporary audio file '{file_path}'. {e}")
+            pygame.mixer.music.unload()
 
+    def check_audio_stop(self):
+        return self.audio_stop_event.is_set()
+    
+    def play_audio_file(self, file_path):
+        self.start_audio(file_path)
+        while pygame.mixer.music.get_busy():
+            if self.check_audio_stop():
+                self.stop_audio()  # Stop audio if the event is set
+                break
+            time.sleep(0.1)
         
 def signal_handler(sig, frame):
     print('Exiting...')
