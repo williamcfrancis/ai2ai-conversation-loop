@@ -11,7 +11,6 @@ import openai
 import re
 from tempfile import NamedTemporaryFile
 import tempfile
-import keyboard
 import random
 from queue import Queue
 import cv2
@@ -20,9 +19,8 @@ import tkinter as tk
 from tkinter import scrolledtext
 import signal
 import sys
-import ctypes
 from playsound import playsound
-import multiprocessing
+
 
 # Configuration constants
 ENERGY_THRESHOLD = 400  # minimum audio energy to consider for recording
@@ -32,6 +30,8 @@ PLAYBACK_DELAY = random.uniform(0.75, 2.5)  # Delay between playing back pre-gen
 FIRST_SPEAKER = 'GPT'  # The first speaker in the conversation
 HUMAN_INTERACTION_LIMIT =  random.uniform(2, 3) # Number of interactions with a human before resuming the AI conversation
 TOPIC_SWIITCH_THRESHOLD = random.uniform(10, 15)  # Number of messages before switching the topic of conversation
+MAX_AUDIO_QUEUE_SIZE = 2  # Maximum number of audio files to keep in the queue for playback
+MAX_RESPONSE_QUEUE_SIZE = 2  # Maximum number of responses to keep in the queue for speech synthesis
 
 # Configure APIs
 OPENAI_API_KEY = os.getenv("openai_api_key") or input("Enter OpenAI API Key: ")
@@ -150,6 +150,12 @@ class AI2AI:
         chat_frame = tk.Frame(self.root, bg=self.bg_color)
         chat_frame.pack(padx=10, pady=10, expand=True, fill='both')
         
+        # Status bar at the bottom
+        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.CENTER)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        # Adjust the font size here. For example, 'Helvetica 12 bold' makes the text larger and bold.
+        self.status_bar.config(bg='#34495E', fg='#ECF0F1', font=('Helvetica', 12, 'bold'), pady=10)
+        
         self.chat_display_area = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, width=80, height=20,
                                                             font=(self.font_family, self.font_size), padx=15, pady=15)
         self.chat_display_area.pack(expand=True, fill='both')
@@ -185,7 +191,11 @@ class AI2AI:
 
         self.chat_display_area.config(state='disabled')
         self.chat_display_area.see(tk.END)
-
+        
+    def update_status(self, message):
+        """Updates the status bar with the given message."""
+        self.status_bar.config(text=message)
+        self.status_bar.update_idletasks()
                 
     def enqueue_gui_update(self, message, sender="ai"):
         self.gui_update_queue.put((message, sender))
@@ -230,7 +240,7 @@ class AI2AI:
                 self.clear_queues()
                 self.interact_with_human = True
                 self.detected_wave = True
-                print("Human detected in the image. There shouldnt be an AI response after this\n")
+                self.update_status("A human is detected waving. Initiating interaction...")
                 self.clear_queues()
                 
         except Exception as e:
@@ -239,25 +249,24 @@ class AI2AI:
     def conversation_loop(self):
         self.begin_conversation()
         while self.active_conversation:
-            if self.text_queue.qsize() < 2:
+            if self.text_queue.qsize() < MAX_RESPONSE_QUEUE_SIZE:
                 if self.topic_msg_count > TOPIC_SWIITCH_THRESHOLD:
                     self.topic = self.get_random_topic()
                     self.topic_msg_count = 0
                     self.moderator_call("Change the topic of conversation to: '" + self.topic + "' naturally and continue the conversation. Your next response must flow into the new topic casually.")
+                    self.update_status("The moderator has called for a topic change.")
                     
                 if self.interact_with_human:
-                    print("Now we actually interact with the human\n")
                     self.clear_queues()
                     self.moderator_call("A human is trying to interact with us. Pause the conversation and respond to the human. Say hi to the human.")
                     self.detected_wave = False
                     self.ai_call()
                     self.next_human = True
                     self.human_to_ai_conversation()
-                    # self.next_speaker = 'GPT' if self.next_speaker == 'Gemini' else 'Gemini'
                     self.interact_with_human = False
-                    # self.clear_queues(stop_audio=False)
                        
                 elif not self.interact_with_human:
+                    self.update_status("The AIs are conversing...")
                     self.ai_call()
                     self.topic_msg_count += 1
             time.sleep(0.1)
@@ -270,20 +279,24 @@ class AI2AI:
                 with self.sr_microphone as source:
                     self.sr_recognizer.adjust_for_ambient_noise(source)
                     print("Listening for human speech... Speak now\n")
+                    self.update_status("Listening for human speech... Speak now")
                     try:
                         audio = self.sr_recognizer.listen(source, timeout=10, phrase_time_limit=PAUSE_THRESHOLD)
                         # self.transcription = self.sr_recognizer.recognize_whisper(audio, model="base.en", language="English")
                         self.transcription = self.sr_recognizer.recognize_google(audio, language="English")
                         self.chat_history.append("Human: " + self.transcription + "\n")
                         self.display_response(self.transcription)
+                        self.update_status("Human speech detected. Processing...")
                     except sr.WaitTimeoutError:
                         print("No speech detected within the time limit.")
                         self.interact_with_human = False  # Stop interaction if no speech is detected within the time limit
                         self.next_human = False
                         self.clear_queues()
                         self.moderator_call("The human has stopped interacting with you. Say goodbye to the human and continue the conversation with the AI.")
+                        self.update_status("No speech detected within the time limit. Resuming AI conversation...")
                     except sr.UnknownValueError:
                         print("Google Web Speech API could not understand the audio.")
+                        self.update_status("Audio could not be understood. Please try again.")
                     except sr.RequestError as e:
                         print(f"Could not request results from Google Web Speech API; {e}")
                 self.next_human = False
@@ -298,6 +311,7 @@ class AI2AI:
                 self.next_human = False
                 self.clear_queues()
                 self.moderator_call("The human has stopped interacting with you. Say goodbye to the human and continue the conversation with the AI.")
+                self.update_status("Human interaction limit reached. Resuming AI conversation...")
                 return
                     
     def clear_queues(self):
@@ -377,8 +391,8 @@ class AI2AI:
                 max_tokens=100, 
                 temperature=0.2, 
                 top_p=1.0, 
-                frequency_penalty=0.8, 
-                presence_penalty=0.8
+                frequency_penalty=0.5, 
+                presence_penalty=0.5
             )
             # Adjusting the way to access the text output based on the actual structure of the response
             if completion.choices and completion.choices[0].message:
@@ -451,7 +465,7 @@ class AI2AI:
         while True:
             if self.interact_with_human or self.detected_wave:
                 break
-            if not self.text_queue.empty() and self.audio_queue.qsize() < 2:
+            if not self.text_queue.empty() and self.audio_queue.qsize() < MAX_AUDIO_QUEUE_SIZE: 
                 self.speech_synthesis_complete = False
                 text, voice = self.text_queue.get()  # Unpack text and voice
                 audio_path = self.generate_speech_to_file(text, voice)  # Pass voice to the method
