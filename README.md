@@ -22,14 +22,14 @@ This project aims to create an interactive art installation featuring endless co
 1. Clone the repository:
 
 ```
-   git clone <repository-url>
+   git clone https://github.com/williamcfrancis/ai2ai-conversation-loop.git
 ```
 
 2. Install the required Python packages:
 
-   <<<bash
+   ```
    pip install -r requirements.txt
-   <<<
+   ```
 
 3. Set up your API keys for OpenAI and Google Generative AI in your environment variables or directly in the script as fallbacks.
 
@@ -38,7 +38,7 @@ This project aims to create an interactive art installation featuring endless co
 Navigate to the project directory and run:
 
 ```
-python ai2ai_art_installation.py --topic "default"
+python main.py --topic "default"
 ```
 
 You can specify a starting conversation topic via the `--topic` argument or let the system choose a random one by default.
@@ -46,7 +46,7 @@ You can specify a starting conversation topic via the `--topic` argument or let 
 ## Usage
 
 - **Start the Installation**: Follow the running instructions to start the art installation.
-- **Interact with AI**: Visitors can wave their hand in front of the webcam to initiate a conversation with the AI. The AI will pause its ongoing conversation and switch to interact with the human.
+- **Interact with AI**: Visitors can wave their hand in front of the camera to initiate a conversation with the AI. The AI will pause its ongoing conversation and switch to interact with the human.
 - **Change Conversation Topics**: The installation autonomously switches topics at random intervals but can also change topics based on visitor interactions.
 
 ## Features
