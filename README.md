@@ -21,9 +21,9 @@ This project aims to create an interactive art installation featuring endless co
 
 1. Clone the repository:
 
-'''
+```
    git clone <repository-url>
-'''
+```
 
 2. Install the required Python packages:
 
@@ -37,9 +37,9 @@ This project aims to create an interactive art installation featuring endless co
 
 Navigate to the project directory and run:
 
-'''
+```
 python ai2ai_art_installation.py --topic "default"
-'''
+```
 
 You can specify a starting conversation topic via the `--topic` argument or let the system choose a random one by default.
 
