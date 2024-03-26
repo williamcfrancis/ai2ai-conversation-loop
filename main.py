@@ -70,6 +70,7 @@ class AI2AI:
         self.gui_update_queue = Queue()
         self.speech_synthesis_complete = True
         self.vlm_model = genai.GenerativeModel('gemini-pro-vision')
+        self.human_appearance = ""
 
 
     def start_conversation(self):
@@ -216,7 +217,7 @@ class AI2AI:
                 break
             img = self.capture_image_from_webcam()
             if img:
-                self.send_image_to_vlm("Check if there is a person trying to interact with you in the image. Specifically, if there is a waving gesture, return 'YES', otherwise return 'NO'", img)
+                self.send_image_to_vlm("Check if there is a person trying to interact with you in the image. Specifically, if there is a waving gesture, return 'YES', otherwise return 'NO'. If you return 'YES', also include what stands out about the person within curly braces.", img)
                 # time.sleep(0.25)  # Delay to avoid overwhelming the API and the webcam
     
     def capture_image_from_webcam(self):
@@ -236,14 +237,16 @@ class AI2AI:
         """Send the captured image along with a prompt to Gemini Pro Vision and check for human interaction."""
         try:
             gemini_response = self.vlm_model.generate_content([input_text, img], stream=False)
-            
+            #check for curly braces
+            if "{" in gemini_response.text:
+                self.human_appearance = re.search(r'\{(.*?)\}', gemini_response.text).group(1)
             gemini_response.resolve()
             if "YES" in gemini_response.text:
                 self.clear_queues()
                 self.interact_with_human = True
                 self.detected_wave = True
                 self.update_status("A human is detected waving. Initiating interaction...")
-                self.clear_queues()
+                
                 
         except Exception as e:
             print("Failed to send image to Gemini Pro Vision:", e)
@@ -260,6 +263,7 @@ class AI2AI:
                     
                 if self.interact_with_human:
                     self.clear_queues()
+                    print("Human appearance: ", self.human_appearance)
                     self.moderator_call("A human is trying to interact with us. Pause the conversation and respond to the human. Say hi to the human.")
                     self.detected_wave = False
                     self.ai_call()
@@ -333,16 +337,14 @@ class AI2AI:
     def display_response(self, response):
         if self.interact_with_human and not self.next_human:
             print(self.next_speaker + ": " + response + "\n")
-            self.enqueue_gui_update(response, self.next_speaker.lower())
             voice = "onyx" if self.next_speaker == 'GPT' else "nova"
             self.speak(response, voice)
 
         elif not self.interact_with_human and not self.next_human:
             print(self.next_speaker + ": " + response + "\n")
-            self.enqueue_gui_update(response, self.next_speaker.lower())
             voice = "onyx" if self.next_speaker == 'GPT' else "nova"
             # checking if the queue is actually getting filled
-            self.text_queue.put((response, voice))
+            self.text_queue.put((response, voice, self.next_speaker.lower())) 
             self.next_speaker = 'GPT' if self.next_speaker == 'Gemini' else 'Gemini'
         else:
             print("Human: " + response + "\n")
@@ -463,15 +465,18 @@ class AI2AI:
         except Exception:
             return
     
-    def speech_synthesis_worker(self): # Worker to generate speech from text and save to a temporary file
+    def speech_synthesis_worker(self):
         while True:
             if self.interact_with_human or self.detected_wave:
                 break
             if not self.text_queue.empty() and self.audio_queue.qsize() < MAX_AUDIO_QUEUE_SIZE: 
                 self.speech_synthesis_complete = False
-                text, voice = self.text_queue.get()  # Unpack text and voice
+                text, voice, sender = self.text_queue.get()  # Unpack text, voice, and sender
+                
+                # Generate audio and add to the queue
                 audio_path = self.generate_speech_to_file(text, voice)  # Pass voice to the method
-                self.audio_queue.put(audio_path, block=False) 
+                if audio_path is not None:
+                    self.audio_queue.put((audio_path, text, sender))  # Adjusted to remove unused unpacking
                 self.speech_synthesis_complete = True
             time.sleep(0.1)
             
@@ -495,8 +500,11 @@ class AI2AI:
             if self.interact_with_human or self.detected_wave:
                 break
             if not self.audio_queue.empty():
-                audio_path = self.audio_queue.get()
-                self.play_audio_file(audio_path)
+                try:
+                    audio_path, text, sender = self.audio_queue.get()
+                    self.play_audio_file(audio_path, text, sender)
+                except Exception as e:
+                    print(f"Error playing audio file: {e}")
             time.sleep(0.1)  # Sleep briefly if the queue is empty to reduce CPU usage
             
              
@@ -514,7 +522,9 @@ class AI2AI:
     def check_audio_stop(self):
         return self.audio_stop_event.is_set()
     
-    def play_audio_file(self, file_path):
+    def play_audio_file(self, file_path, text, sender):
+
+        self.enqueue_gui_update(text, sender)
         self.start_audio(file_path)
         while pygame.mixer.music.get_busy():
             if self.check_audio_stop():
