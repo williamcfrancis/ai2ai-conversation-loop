@@ -1,0 +1,6 @@
+SpeechRecognition
+pygame
+Pillow
+opencv-python-headless
+playsound
+openai
