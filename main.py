@@ -69,6 +69,7 @@ class AI2AI:
         self.transcription = ""
         self.gui_update_queue = Queue()
         self.speech_synthesis_complete = True
+        self.vlm_model = genai.GenerativeModel('gemini-pro-vision')
 
 
     def start_conversation(self):
@@ -98,7 +99,7 @@ class AI2AI:
                 print("Playback thread restarting...")
                 self.playback_thread = threading.Thread(target=self.playback_worker, daemon=True)
                 self.playback_thread.start()
-            time.sleep(0.5)
+            time.sleep(0.1)
 
     #################### GUI ####################
         
@@ -220,7 +221,7 @@ class AI2AI:
     
     def capture_image_from_webcam(self):
         """Capture an image from the webcam and return it as a PIL image."""
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(1)
         ret, frame = cap.read()
         cap.release()
         if not ret:
@@ -228,13 +229,14 @@ class AI2AI:
             return None
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame_rgb)
+
         return pil_img
 
     def send_image_to_vlm(self, input_text, img):
         """Send the captured image along with a prompt to Gemini Pro Vision and check for human interaction."""
         try:
-            model = genai.GenerativeModel('gemini-pro-vision')
-            gemini_response = model.generate_content([input_text, img], stream=False)
+            gemini_response = self.vlm_model.generate_content([input_text, img], stream=False)
+            
             gemini_response.resolve()
             if "YES" in gemini_response.text:
                 self.clear_queues()
