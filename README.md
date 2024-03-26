@@ -38,7 +38,7 @@ An interactive art installation that enables endless dialogues between two leadi
 
 3. Set up your API keys for OpenAI and Google Generative AI in your environment variables or directly in the script as fallbacks.
    
-4. Check and update your CAMERA_PORT
+4. Check your camera port and update the CAMERA_PORT global variable
 ```
    python check_camera_ports.py
 ```
