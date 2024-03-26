@@ -32,13 +32,19 @@ An interactive art installation that enables endless dialogues between two leadi
 
 2. Install the required Python packages:
 
-   ```
+```
    pip install -r requirements.txt
-   ```
+```
 
 3. Set up your API keys for OpenAI and Google Generative AI in your environment variables or directly in the script as fallbacks.
+   
+4. Check and update your CAMERA_PORT
+```
+   python check_camera_ports.py
+```
 
-### Running the Installation
+
+### Run
 
 Navigate to the project directory and run:
 
