@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project aims to create an interactive art installation featuring endless conversations between two of the most advanced AI models, with the capability for live human interaction. Visitors can influence the conversation by physically gesturing to the installation, promoting a dynamic and participatory experience.
+An interactive art installation that enables endless dialogues between two leading AI models, GPT and Gemini, with an added dimension of live human interaction. Designed to engage visitors in a unique participatory experience, the installation detects physical gestures, allowing users to seamlessly become part of the AI conversation. This blend of advanced AI conversation capabilities with real-time human input offers an immersive and dynamic interaction, pushing the boundaries of traditional art installations.
 
 ## Setup
 
@@ -16,6 +16,11 @@ This project aims to create an interactive art installation featuring endless co
 - OpenAI GPT (API key required)
 - Google Generative AI (API key required)
 - Tkinter for GUI
+
+#### Hardware
+- Microphone: For capturing human speech.
+- Camera: For detecting human gestures.
+- Speakers: For audio output of AI-generated speech.
 
 ### Installation
 
@@ -56,6 +61,9 @@ You can specify a starting conversation topic via the `--topic` argument or let 
 - **Voice Recognition and Speech Synthesis**: Converts human speech to text and generates audible responses, facilitating natural communication with the AI.
 - **Dynamic Topic Switching**: The conversation topic changes dynamically, driven by the AI or human interactions, ensuring the dialogue remains engaging and varied.
 - **Interactive GUI**: A graphical user interface displays the ongoing conversation, current system status, and provides visual feedback of AI and human contributions.
+- **Adaptive Response Timing**: Incorporates a variable playback delay to simulate more natural conversational pauses, making interactions feel more lifelike and less robotic
+- **Environmental Awareness**: Adjusts the speech recognition sensitivity dynamically based on the ambient noise level
+- **Moderator Intervention**: Features a silent moderator mechanism that can dynamically steer the conversation, initiate topic changes, or facilitate the transition between AI-to-AI and AI-to-human interactions.
 
 ## Contributions
 
