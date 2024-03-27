@@ -1,0 +1,3 @@
+Requirement already satisfied: tkvideoplayer in c:\programdata\miniconda3\lib\site-packages (2.8)
+Requirement already satisfied: pillow>=9.0.1 in c:\programdata\miniconda3\lib\site-packages (from tkvideoplayer) (10.2.0)
+Requirement already satisfied: av==9.2.0 in c:\programdata\miniconda3\lib\site-packages (from tkvideoplayer) (9.2.0)
