@@ -1,7 +1,5 @@
 # AI to AI Conversation Loop
 
-## Overview
-
 An interactive art installation that enables endless dialogues between two leading AI models, GPT and Gemini, with an added dimension of live human interaction. Designed to engage visitors in a unique participatory experience, the installation detects physical gestures, allowing users to seamlessly become part of the AI conversation. This blend of advanced AI conversation capabilities with real-time human input offers an immersive and dynamic interaction, pushing the boundaries of traditional art installations.
 
 ## Setup
@@ -32,13 +30,19 @@ An interactive art installation that enables endless dialogues between two leadi
 
 2. Install the required Python packages:
 
-   ```
+```
    pip install -r requirements.txt
-   ```
+```
 
 3. Set up your API keys for OpenAI and Google Generative AI in your environment variables or directly in the script as fallbacks.
+   
+4. Check your camera port and update the CAMERA_PORT global variable
+```
+   python check_camera_ports.py
+```
 
-### Running the Installation
+
+### Run
 
 Navigate to the project directory and run:
 
