@@ -22,7 +22,10 @@ import sys
 from playsound import playsound
 from tkVideoPlayer import TkinterVideo
 from elevenlabs.client import ElevenLabs
-from elevenlabs import stream, save, play
+from elevenlabs import stream, save
+import requests
+import io
+import base64
 
 
 # Configuration constants
@@ -35,7 +38,11 @@ HUMAN_INTERACTION_LIMIT =  random.uniform(4, 5) # Number of interactions with a 
 TOPIC_SWIITCH_THRESHOLD = random.uniform(10, 15)  # Number of messages before switching the topic of conversation
 MAX_AUDIO_QUEUE_SIZE = 2  # Maximum number of audio files to keep in the queue for playback
 MAX_RESPONSE_QUEUE_SIZE = 2  # Maximum number of responses to keep in the queue for speech synthesis
-CAMERA_PORT = 1  # Port number for the webcam
+CAMERA_PORT = 0  # Port number for the webcam
+VLM_MODEL = 'gpt-vision' # 'gemini-pro-vision'  # The model to use for vision-based interactions
+GPT_VOICE = "T5cu6IU92Krx4mh43osx"  # Voice for GPT
+GEMINI_VOICE = "fAWgiycvQBMqB5LDGr5G"  # Voice for Gemini
+
 
 # Configure APIs
 OPENAI_API_KEY = os.getenv("openai_api_key") or input("Enter OpenAI API Key: ")
@@ -70,6 +77,7 @@ class AI2AI:
         self.resume_conversation = False
         self.detected_wave = False
         self.stop_video_thread = False
+        self.msg_paused = False
         self.topic_msg_count = 0
         self.GPT_model = "gpt-3.5-turbo"
         # self.GPT_model = "gpt-4-0125-preview"
@@ -119,7 +127,7 @@ class AI2AI:
         self.root.attributes('-fullscreen', True)
         # Define fonts and colors before using them
         self.font_family = "Poppins"
-        self.font_size = 14  
+        self.font_size = 16  
         self.gpt_color = "#b7e1fc" # Light blue
         self.gemini_color = "#dde5b6" # Light green
         self.human_color = "#FAD7A0" # Light orange
@@ -142,7 +150,7 @@ class AI2AI:
         title_bar.pack(fill='x')
 
         # Flexible space before the title label to center it
-        left_space = tk.Frame(title_bar, bg='#A9A9A9', width=200)
+        left_space = tk.Frame(title_bar, bg='#121736', width=200)
         left_space.pack(side='left', fill='x', expand=True)
 
         # Title label centered
@@ -150,7 +158,7 @@ class AI2AI:
         title_label.pack(side='left', expand=False)
 
         # Flexible space after the title label to keep it centered
-        right_space = tk.Frame(title_bar, bg='#A9A9A9', width=200) 
+        right_space = tk.Frame(title_bar, bg='#121736', width=200) 
         right_space.pack(side='left', fill='x', expand=True)
 
         # Close button on title bar, packed last to appear on the right
@@ -162,7 +170,7 @@ class AI2AI:
         chat_frame.pack(padx=10, pady=10, expand=True, fill='both')
         
         # Status frame setup
-        status_frame = tk.Frame(self.root, bg='grey')  # Main container for the status bar
+        status_frame = tk.Frame(self.root, bg='#121736')  # Main container for the status bar
         status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)  # Apply padding to match the overall UI design
 
         # Left status box with darker background color
@@ -211,16 +219,45 @@ class AI2AI:
         # Insert sender's name with a dedicated tag for background color
         self.chat_display_area.insert(tk.END, sender_name + ": ", sender + "_name")
 
-        # Insert the message body with its own tag
-        self.chat_display_area.insert(tk.END, message + "\n\n", tag)
-
+        if sender == "human":
+            self.chat_display_area.insert(tk.END, message, tag)
+            self.chat_display_area.config(state='normal')
+            self.chat_display_area.insert(tk.END, "\n")
+            self.chat_display_area.config(state='disabled')
+        else: 
+            # Loop to insert message character by character
+            self.root.after(0, self.insert_message_character_by_character, message, tag)
+        
         self.chat_display_area.config(state='disabled')
         self.chat_display_area.see(tk.END)
         
-    def update_left_status(self, message, bg_color='#A9A9A9'):
+    def insert_message_character_by_character(self, message, tag, index=0):
+        if (self.interact_with_human or self.detected_wave) and not self.msg_paused:
+            # self.chat_display_area.config(state='disabled')
+            self.msg_paused = True
+            # insert a newline even if the message is not fully displayed
+            self.chat_display_area.config(state='normal')
+            self.chat_display_area.insert(tk.END, "\n")
+            self.chat_display_area.config(state='disabled')
+            return
+        if index < len(message):
+            self.chat_display_area.config(state='normal')
+            self.chat_display_area.insert(tk.END, message[index], tag)
+            self.chat_display_area.config(state='disabled')
+            self.chat_display_area.see(tk.END)
+            # Schedule the next character to be inserted after a short delay
+            self.root.after(50, self.insert_message_character_by_character, message, tag, index + 1)
+        else:
+            # Insert a newline after the message is fully displayed, without specifying a tag
+            self.chat_display_area.config(state='normal')
+            self.chat_display_area.insert(tk.END, "\n")  # Insert two newlines for spacing without using the tag
+            self.chat_display_area.config(state='disabled')
+            self.chat_display_area.see(tk.END)
+
+    def update_left_status(self, message, bg_color='#121736'):
         self.status_left.config(text=message, bg=bg_color)
 
-    def update_right_status(self, message, bg_color='#A9A9A9'):
+    def update_right_status(self, message, bg_color='#121736'):
         self.status_right.config(text=message, bg=bg_color)
         
     def enqueue_gui_update(self, message, sender="ai"):
@@ -245,7 +282,7 @@ class AI2AI:
         self.videoplayer = TkinterVideo(master=self.speak_popup, scaled=True)
 
         # Load the video file
-        self.videoplayer.load(r"./mic_video_edited.mov")
+        self.videoplayer.load(r"./mic_video.mov")
         self.videoplayer.pack(expand=True, fill="both")
 
         # Initially, hide the popup
@@ -287,7 +324,10 @@ class AI2AI:
                 break
             img = self.capture_image_from_webcam()
             if img:
-                self.send_image_to_vlm("Check if there is a person trying to interact with you in the image. Specifically, if there is a waving gesture, return 'YES', otherwise return 'NO'. If you return 'YES', also include a description of the person (other than the fact that they are waving) within curly braces.", img)
+                if VLM_MODEL == 'gpt-vision':
+                    self.send_image_to_gpt("If there is a person waving at you with their hand up, return 'YES', otherwise return 'NO'. If you return 'YES', also include a short description of the person (other than the fact that they are waving) within curly braces. Return 'YES' only if the person if waving their hand at you.", img)
+                else:
+                    self.send_image_to_gemini("If there is a person waving at you with their hand up, return 'YES', otherwise return 'NO'. If you return 'YES', also include a short description of the person (other than the fact that they are waving) within curly braces. Return 'YES' only if the person if waving their hand at you.", img)
                 # time.sleep(0.25)  # Delay to avoid overwhelming the API and the webcam
     
     def capture_image_from_webcam(self):
@@ -302,8 +342,64 @@ class AI2AI:
         pil_img = Image.fromarray(frame_rgb)
 
         return pil_img
+    
+    def encode_image_to_base64(self, pil_img):
+        """Encode PIL image to base64 string."""
+        img_byte_arr = io.BytesIO()
+        pil_img.save(img_byte_arr, format='JPEG')  # Save PIL image to byte array
+        img_byte_arr = img_byte_arr.getvalue()
+        return base64.b64encode(img_byte_arr).decode('utf-8')  # Encode as base64
 
-    def send_image_to_vlm(self, input_text, img):
+    def send_image_to_openai(self, base64_image, input_text):
+        """Send the base64 encoded image to OpenAI API."""
+        headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
+        }
+        payload = {
+        "model": "gpt-4-vision-preview",
+        "messages": [
+            {
+            "role": "user",
+            "content": [
+                {
+                "type": "text",
+                "text": input_text
+                },
+                {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{base64_image}",
+                    "detail":"low"
+                }
+                }
+            ]
+            }
+        ],
+        "max_tokens": 100
+        }
+
+        response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        return response.json()
+
+    def send_image_to_gpt(self, input_text, img):
+        """Send the captured image along with a prompt to Gemini Pro Vision and check for human interaction"""
+        try:
+            base64_image = self.encode_image_to_base64(img)
+            response = self.send_image_to_openai(base64_image, input_text)
+            gpt_response = response['choices'][0]['message']['content']
+            #check for curly braces
+            if "{" in gpt_response:
+                self.human_appearance = re.search(r'\{(.*?)\}', gpt_response).group(1)
+            if "YES" in gpt_response:
+                self.clear_queues()
+                self.interact_with_human = True
+                self.detected_wave = True
+                self.update_left_status("A human is detected waving. Initiating interaction...")
+        except Exception as e:
+            print("Failed to send image to GPT Vision:", e)
+                
+    def send_image_to_gemini(self, input_text, img):
         """Send the captured image along with a prompt to Gemini Pro Vision and check for human interaction."""
         try:
             gemini_response = self.vlm_model.generate_content([input_text, img], stream=False)
@@ -316,8 +412,6 @@ class AI2AI:
                 self.interact_with_human = True
                 self.detected_wave = True
                 self.update_left_status("A human is detected waving. Initiating interaction...")
-                
-                
         except Exception as e:
             print("Failed to send image to Gemini Pro Vision:", e)
         
@@ -334,18 +428,19 @@ class AI2AI:
                 if self.interact_with_human:
                     self.clear_queues()
                     print("Human appearance: ", self.human_appearance, "\n")
-                    self.moderator_call("A human is trying to interact with us. Pause the conversation and respond to the human. Say hi to the human."+ self.human_appearance + "Only use the human's appearance in your greeting very gently if appropriate")
+                    self.moderator_call("A human is trying to interact with us. Pause the conversation and respond to the human. Say hi to the human. If appropriate, compliment the person's appearance or pick up on anything peculiar about them for a friendly start:"+ self.human_appearance)
                     self.detected_wave = False
                     self.ai_call()
                     self.next_human = True
                     self.human_to_ai_conversation()
                     self.interact_with_human = False
+                    self.msg_paused = False # Reset the message pause flag
                        
                 elif not self.interact_with_human:
                     self.update_left_status("The AIs are conversing...")
                     self.ai_call()
                     self.topic_msg_count += 1
-            time.sleep(0.1)
+            time.sleep(0.01)
     
     def human_to_ai_conversation(self):
 
@@ -472,7 +567,7 @@ class AI2AI:
                 ],
                 max_tokens=100, 
                 temperature=0.2, 
-                top_p=1.0, 
+                top_p=0.8, 
                 frequency_penalty=0.5, 
                 presence_penalty=0.5
             )
@@ -515,7 +610,8 @@ class AI2AI:
                             ]
             response = self.gemini_client.generate_content(prompt, safety_settings=safety_settings, generation_config=genai.types.GenerationConfig(
                                                                                                                 max_output_tokens=100, 
-                                                                                                                temperature=0.2))
+                                                                                                                temperature=0.2,
+                                                                                                                top_p=0.8))
             gemini_response_text = response.text           
             cleaned_response = re.sub(r'(\*\*)?(Gemini|GPT|Moderator|Human):\s*\2?\s*', '', gemini_response_text) # Remove the speaker label if present 
             self.chat_history.append("Gemini: " + cleaned_response + "\n")
@@ -530,30 +626,13 @@ class AI2AI:
         """Directly convert text to speech and play it."""
         try:
             self.enqueue_gui_update(text, sender)
-            # response = self.openai_client.audio.speech.create(
-            #     model="tts-1", 
-            #     voice=voice, 
-            #     input=text
-            # )
-            voice = "iYLUczf4uKtcnd2BOxXT" if voice == "onyx" else "y1lS8L7Ik8BvAt23pgRt"
+            voice = GPT_VOICE if voice == "onyx" else GEMINI_VOICE
             audio_stream = elevenlabs_client.generate(
                             text=text,
                             stream=True,
                             voice = voice
                             )
             stream(audio_stream)
-            # for chunk in audio_stream:
-            #     # Create a temporary file to write audio chunk to
-            #     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
-            #         temp_audio_file_path = temp_audio_file.name
-            #         temp_audio_file.write(chunk)
-            #         # No need to explicitly close due to the context manager
-
-            #     # Play the audio chunk from the file
-            #     playsound(temp_audio_file_path)
-
-            #     # Remove the temporary file
-            #     os.remove(temp_audio_file_path)
         except Exception as e:
             print(f"Error in speech synthesis: {e}")
             
@@ -575,12 +654,7 @@ class AI2AI:
             
     def generate_speech_to_file(self, text, voice): # Generate speech from text and save to a temporary file
         try:
-            # response = self.openai_client.audio.speech.create(
-            #     model="tts-1",
-            #     voice=voice,
-            #     input=text
-            # )
-            voice = "iYLUczf4uKtcnd2BOxXT" if voice == "onyx" else "y1lS8L7Ik8BvAt23pgRt"
+            voice = GPT_VOICE if voice == "onyx" else GEMINI_VOICE
             audio = elevenlabs_client.generate(
                             text=text,
                             stream=False,
