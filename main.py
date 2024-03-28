@@ -29,9 +29,9 @@ from elevenlabs import stream, save, play
 ENERGY_THRESHOLD = 400  # minimum audio energy to consider for recording
 PAUSE_THRESHOLD = 1.5  # seconds of non-speaking audio before a phrase is considered complete
 SAVE_HISTORY_LAST_N = 6  # Number of last messages to save in the conversation history
-PLAYBACK_DELAY = random.uniform(0.75, 2.5)  # Delay between playing back pre-generated audio files. Reduce this to speed up the conversation. None for random delay - more human-like
+PLAYBACK_DELAY = random.uniform(0.2, 1)  # Delay between playing back pre-generated audio files. Reduce this to speed up the conversation. None for random delay - more human-like
 FIRST_SPEAKER = 'GPT'  # The first speaker in the conversation
-HUMAN_INTERACTION_LIMIT =  random.uniform(2, 3) # Number of interactions with a human before resuming the AI conversation
+HUMAN_INTERACTION_LIMIT =  random.uniform(4, 5) # Number of interactions with a human before resuming the AI conversation
 TOPIC_SWIITCH_THRESHOLD = random.uniform(10, 15)  # Number of messages before switching the topic of conversation
 MAX_AUDIO_QUEUE_SIZE = 2  # Maximum number of audio files to keep in the queue for playback
 MAX_RESPONSE_QUEUE_SIZE = 2  # Maximum number of responses to keep in the queue for speech synthesis
@@ -81,6 +81,7 @@ class AI2AI:
         self.speech_synthesis_complete = True
         self.vlm_model = genai.GenerativeModel('gemini-pro-vision')
         self.human_appearance = ""
+        
 
 
     def start_conversation(self):
@@ -115,7 +116,7 @@ class AI2AI:
     def setup_gui(self, root):
         self.root = root
         self.root.title("AI Conversation")
-
+        self.root.attributes('-fullscreen', True)
         # Define fonts and colors before using them
         self.font_family = "Poppins"
         self.font_size = 14  
@@ -141,7 +142,7 @@ class AI2AI:
         title_bar.pack(fill='x')
 
         # Flexible space before the title label to center it
-        left_space = tk.Frame(title_bar, bg='#2C3E50', width=200)
+        left_space = tk.Frame(title_bar, bg='#A9A9A9', width=200)
         left_space.pack(side='left', fill='x', expand=True)
 
         # Title label centered
@@ -149,7 +150,7 @@ class AI2AI:
         title_label.pack(side='left', expand=False)
 
         # Flexible space after the title label to keep it centered
-        right_space = tk.Frame(title_bar, bg='#2C3E50', width=200)
+        right_space = tk.Frame(title_bar, bg='#A9A9A9', width=200) 
         right_space.pack(side='left', fill='x', expand=True)
 
         # Close button on title bar, packed last to appear on the right
@@ -165,7 +166,7 @@ class AI2AI:
         status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)  # Apply padding to match the overall UI design
 
         # Left status box with darker background color
-        self.status_left_frame = tk.Frame(status_frame, borderwidth=2, relief='groove', bg='#333940')
+        self.status_left_frame = tk.Frame(status_frame, borderwidth=2, relief='groove', bg='#333940')  # Darker grey
         self.status_left_frame.pack(side='left', fill=tk.BOTH, expand=True)
 
         self.status_left = tk.Label(self.status_left_frame, text="The AIs are conversing..", bg='#333940', fg='#FFFFFF',
@@ -173,7 +174,7 @@ class AI2AI:
         self.status_left.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)  # Padding to ensure text is centered
 
         # Right status box with darker background color
-        self.status_right_frame = tk.Frame(status_frame, borderwidth=2, relief='groove', bg='#2B303B')
+        self.status_right_frame = tk.Frame(status_frame, borderwidth=2, relief='groove', bg='#2B303B')  # Even darker grey
         self.status_right_frame.pack(side='left', fill=tk.BOTH, expand=True)
 
         self.status_right = tk.Label(self.status_right_frame, text="Waiting for status...", bg='#2B303B', fg='#FFFFFF',
@@ -216,10 +217,10 @@ class AI2AI:
         self.chat_display_area.config(state='disabled')
         self.chat_display_area.see(tk.END)
         
-    def update_left_status(self, message, bg_color='lightgrey'):
+    def update_left_status(self, message, bg_color='#A9A9A9'):
         self.status_left.config(text=message, bg=bg_color)
 
-    def update_right_status(self, message, bg_color='darkgrey'):
+    def update_right_status(self, message, bg_color='#A9A9A9'):
         self.status_right.config(text=message, bg=bg_color)
         
     def enqueue_gui_update(self, message, sender="ai"):
