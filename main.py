@@ -622,20 +622,37 @@ class AI2AI:
 
     #################### AUDIO PROCESSING ####################
             
+    # def speak_elevenlabs(self, text, voice, sender): 
+    #     """Directly convert text to speech and play it."""
+    #     try:
+    #         self.enqueue_gui_update(text, sender)
+    #         voice = GPT_VOICE if voice == "onyx" else GEMINI_VOICE
+    #         audio_stream = elevenlabs_client.generate(
+    #                         text=text,
+    #                         stream=True,
+    #                         voice = voice
+    #                         )
+    #         stream(audio_stream)
+    #     except Exception as e:
+    #         print(f"Error in speech synthesis: {e}")
     def speak(self, text, voice, sender): 
         """Directly convert text to speech and play it."""
         try:
+            response = self.openai_client.audio.speech.create(
+                model="tts-1", 
+                voice=voice, 
+                input=text
+            )
             self.enqueue_gui_update(text, sender)
-            voice = GPT_VOICE if voice == "onyx" else GEMINI_VOICE
-            audio_stream = elevenlabs_client.generate(
-                            text=text,
-                            stream=True,
-                            voice = voice
-                            )
-            stream(audio_stream)
-        except Exception as e:
-            print(f"Error in speech synthesis: {e}")
-            
+            # Use a temporary file name but manage the file manually to avoid permission issues
+            temp_audio_file_path = tempfile.mktemp(suffix='.mp3')
+            with open(temp_audio_file_path, 'wb') as temp_audio_file:
+                response.stream_to_file(temp_audio_file.name)
+            # Ensure the file is closed before attempting to play it
+            playsound(temp_audio_file_path)
+            os.remove(temp_audio_file_path)
+        except Exception:
+            return       
         
     def speech_synthesis_worker(self):
         while True:
@@ -652,23 +669,38 @@ class AI2AI:
                 self.speech_synthesis_complete = True
             time.sleep(0.1)
             
+    # def generate_speech_to_file_elevenlabs(self, text, voice): # Generate speech from text and save to a temporary file
+    #     try:
+    #         voice = GPT_VOICE if voice == "onyx" else GEMINI_VOICE
+    #         audio = elevenlabs_client.generate(
+    #                         text=text,
+    #                         stream=False,
+    #                         voice = voice
+    #                         )
+            
+    #         with NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
+    #             audio_file_path = temp_audio_file.name
+    #             save(audio, audio_file_path)
+    #             return audio_file_path
+    #     except Exception as e:
+    #         print(f"Warning in text-to-speech conversion: {e}")
+    #         return None
+        
     def generate_speech_to_file(self, text, voice): # Generate speech from text and save to a temporary file
         try:
-            voice = GPT_VOICE if voice == "onyx" else GEMINI_VOICE
-            audio = elevenlabs_client.generate(
-                            text=text,
-                            stream=False,
-                            voice = voice
-                            )
-            
+            response = self.openai_client.audio.speech.create(
+                model="tts-1",
+                voice=voice,
+                input=text
+            )
             with NamedTemporaryFile(delete=False, suffix='.mp3') as temp_audio_file:
                 audio_file_path = temp_audio_file.name
-                save(audio, audio_file_path)
+                response.stream_to_file(audio_file_path)
                 return audio_file_path
         except Exception as e:
             print(f"Warning in text-to-speech conversion: {e}")
             return None
-
+        
     def playback_worker(self): # Worker to play audio files from the queue
         while True:
             if self.interact_with_human or self.detected_wave:
